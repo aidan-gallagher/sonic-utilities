@@ -8053,5 +8053,70 @@ def max_sessions(max_sessions):
                         {'max_sessions': max_sessions})
 
 
+#
+# 'local-login' group ('config local-login ...')
+#
+@config.group()
+def local_login():
+    """Configuring local login credentials"""
+    pass
+
+def prompt_user_for_password() -> str:
+    """Use openssl to prompt the user for a password and encrypt it using SHA-512"""
+    result = subprocess.run(['openssl', 'passwd', '-6'], text=True, capture_output=True)
+    if result.returncode != 0:
+        exit() # User didn't enter same password twice. 
+    encrypted_password = result.stdout.strip()
+    return encrypted_password
+
+
+@local_login.command()
+@click.argument('username', metavar='<username>', required=True)
+@click.option('--encrypted-password', default=None, help='Provide an existing encrypted password.')
+def adduser(username, encrypted_password):
+    """Add a new user"""
+
+    config_db = ConfigDBConnector()
+    config_db.connect()
+ 
+    if encrypted_password == None:
+        encrypted_password = prompt_user_for_password()
+    
+    config_db.mod_entry(swsscommon.CFG_LOCAL_LOGIN_TABLE_NAME, username,
+                    {'password': encrypted_password})
+    
+
+@local_login.command()
+@click.option('--encrypted-password', default=None, help='Provide an existing encrypted password.')
+def chpasswd(encrypted_password):
+    """Change the password for the currently logged in user"""
+
+    config_db = ConfigDBConnector()
+    config_db.connect()
+ 
+    username = os.getlogin()
+    if encrypted_password == None:
+        encrypted_password = prompt_user_for_password()
+
+    config_db.mod_entry(swsscommon.CFG_LOCAL_LOGIN_TABLE_NAME, username,
+                    {'password': encrypted_password})
+    
+
+@local_login.command()
+@click.argument('username', metavar='<username>', required=True)
+def deluser(username):
+
+    config_db = ConfigDBConnector()
+    config_db.connect()
+
+    # Ensure user is currently logged in
+    result = subprocess.run(['users'], text=True, capture_output=True)
+    logged_in_users = result.stdout.split()
+    if username in logged_in_users:
+        print(f"Error: Can not delete {username} as they are currently logged in")
+
+    config_db.set_entry(swsscommon.CFG_LOCAL_LOGIN_TABLE_NAME, username, None)
+
+
 if __name__ == '__main__':
     config()
