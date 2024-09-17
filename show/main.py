@@ -2473,6 +2473,19 @@ def ssh(db):
     click.echo(tabulate(configuration, headers=hdrs, tablefmt='simple', missingval=''))
 
 
+@cli.group('local-login', invoke_without_command=True)
+@clicommon.pass_db
+def local_login(db):
+    """Show ssh configuration"""
+
+    config_db = ConfigDBConnector()
+    config_db.connect()
+    local_login_table = config_db.get_table('LOCAL_LOGIN')
+
+    for user_name in local_login_table:
+        click.echo(user_name)
+
+
 # Load plugins and register them
 helper = util_base.UtilHelper()
 helper.load_and_register_plugins(plugins, cli)
