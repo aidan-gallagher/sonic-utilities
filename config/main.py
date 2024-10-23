@@ -12,6 +12,7 @@ import netifaces
 import os
 import re
 import subprocess
+import signal
 import sys
 import time
 import itertools
@@ -8061,12 +8062,49 @@ def local_login():
     """Configuring local login credentials"""
     pass
 
-def prompt_user_for_password() -> str:
-    """Use openssl to prompt the user for a password and encrypt it using SHA-512"""
-    result = subprocess.run(['openssl', 'passwd', '-6'], text=True, capture_output=True)
+def prompt_and_retrieve_encrypted_password(username) -> str:
+    """Ideally this function would just encypt the user's password and return; however,
+       I could not find a way to encrypt password and ensure the password adhered
+       to the password hardening constraints. Therefore this function will create the
+       user and attempt to set the password. If `sudo passwd` fails then the password
+       didn't meet the hardening constraints and program exits without leaving
+       any changes. If `sudo passwd` succeeds then the linux credentials are changed 
+       and the credentials are pushed to the configuration DB."""
+
+    # Create user if they don't exist.
+    result = subprocess.run(['id', username], text=True, capture_output=True)
+    user_was_newly_added = False
     if result.returncode != 0:
-        exit() # User didn't enter same password twice. 
-    encrypted_password = result.stdout.strip()
+        user_was_newly_added = True
+        subprocess.run(
+                ["sudo", "useradd", "--create-home", "--shell", "/bin/bash", username],
+                text=True,
+                capture_output=True,
+            )
+    
+    # Prompt user to input the users password.
+    # Temporarily ignore Ctrl-C because the passwd command does that.
+    # If the command returns unsucessful then the password didn't meet the hardening requirements.
+    # If the user was newly added in the above section then delete the user.
+    try:
+        original_handler = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, lambda signum, frame: None)
+        result = subprocess.run(['sudo', 'passwd', username])
+    finally:
+        signal.signal(signal.SIGINT, original_handler)
+        if result.returncode != 0:
+            if user_was_newly_added:
+                result = subprocess.run(['sudo', 'userdel', username], text=True, capture_output=True)
+            exit() 
+
+    # Read users encrypted password from /etc/shadow
+    # This will be returned so it can be added to the config DB.
+    with open('/etc/shadow', 'r') as file:
+            for line in file:
+                fields = line.strip().split(':')        # Split line by ':'
+                if fields[0] == username:               # Check if the first field matches the username
+                    encrypted_password =  fields[1]     # get the encrypted password
+
     return encrypted_password
 
 
@@ -8074,13 +8112,13 @@ def prompt_user_for_password() -> str:
 @click.argument('username', metavar='<username>', required=True)
 @click.option('--encrypted-password', default=None, help='Provide an existing encrypted password.')
 def setuser(username, encrypted_password):
-    """Add a new user"""
+    """Add a new user or modify an existing user's password."""
 
     config_db = ConfigDBConnector()
     config_db.connect()
  
     if encrypted_password == None:
-        encrypted_password = prompt_user_for_password()
+        encrypted_password = prompt_and_retrieve_encrypted_password(username)
     
     config_db.mod_entry(swsscommon.CFG_LOCAL_LOGIN_TABLE_NAME, username,
                     {'password': encrypted_password})    
