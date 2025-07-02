@@ -10,6 +10,7 @@ import netifaces
 import os
 import re
 import subprocess
+import signal
 import sys
 import time
 import itertools
@@ -7937,6 +7938,199 @@ def warning(db, category_list, max_events, namespace):
 def notice(db, category_list, max_events, namespace):
     handle_asic_sdk_health_suppress(db, 'notice', category_list, max_events, namespace)
 
+
+#
+# 'local-login' group ('config local-login ...')
+#
+@config.group()
+def local_login():
+    """Configuring local login credentials"""
+    pass
+
+
+def prompt_and_retrieve_encrypted_password(username) -> str:
+    """Ideally this function would just encypt the user's password and return; however,
+       I could not find a way to encrypt password and ensure the password adhered
+       to the password hardening constraints. Therefore this function will create the
+       user and attempt to set the password. If `sudo passwd` fails then the password
+       didn't meet the hardening constraints and program exits without leaving
+       any changes. If `sudo passwd` succeeds then the linux credentials are changed
+       and the credentials are pushed to the configuration DB."""
+
+    # Create user if they don't exist.
+    result = subprocess.run(['id', username], text=True, capture_output=True)
+    user_was_newly_added = False
+    if result.returncode != 0:
+        user_was_newly_added = True
+        subprocess.run(
+                ["sudo", "useradd", "--create-home", "--shell", "/bin/bash", username],
+                text=True,
+                capture_output=True,
+            )
+
+    # Prompt user to input the users password.
+    # Temporarily ignore Ctrl-C because the passwd command does that.
+    # If the command returns unsucessful then the password didn't meet the hardening requirements.
+    # If the user was newly added in the above section then delete the user.
+    try:
+        original_handler = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, lambda signum, frame: None)
+        result = subprocess.run(['sudo', 'passwd', username])
+    finally:
+        signal.signal(signal.SIGINT, original_handler)
+        if result.returncode != 0:
+            if user_was_newly_added:
+                result = subprocess.run(['sudo', 'userdel', username], text=True, capture_output=True)
+            exit()
+
+    # Read users encrypted password from /etc/shadow
+    # This will be returned so it can be added to the config DB.
+    with open('/etc/shadow', 'r') as file:
+            for line in file:
+                fields = line.strip().split(':')        # Split line by ':'
+                if fields[0] == username:               # Check if the first field matches the username
+                    encrypted_password =  fields[1]     # get the encrypted password
+    return encrypted_password
+
+
+@local_login.command()
+@click.argument('username', metavar='<username>', required=True)
+@click.option('--encrypted-password', default=None, help='Provide an existing encrypted password.')
+def setuser(username, encrypted_password):
+    """Add a new user or modify an existing user's password."""
+
+    config_db = ConfigDBConnector()
+    config_db.connect()
+
+    if encrypted_password == None:
+        encrypted_password = prompt_and_retrieve_encrypted_password(username)
+
+    config_db.mod_entry(swsscommon.CFG_LOCAL_LOGIN_TABLE_NAME, username,
+                    {'password': encrypted_password})
+
+
+@local_login.command()
+@click.argument('username', metavar='<username>', required=True)
+def deluser(username):
+    """Remove an existing user"""
+
+    config_db = ConfigDBConnector()
+    config_db.connect()
+
+    # Check whether this command will delete the user.
+    # Do this by checking if the user is also configured with ssh login.
+    user_will_be_deleted = True
+    ssh_login_table = config_db.get_table('SSH_LOGIN')
+    for composite_key, _ in ssh_login_table.items():
+        ssh_username, _ = composite_key
+        if ssh_username == username:
+            user_will_be_deleted = False
+
+    # Ensure user is not currently logged in.
+    if user_will_be_deleted:
+        result = subprocess.run(['users'], text=True, capture_output=True)
+        logged_in_users = result.stdout.split()
+        if username in logged_in_users:
+            print(f"Error: Can not delete {username} as they are currently logged in")
+            exit(-1)
+
+    # Ensure user already exists.
+    local_login_table = config_db.get_table('LOCAL_LOGIN')
+    if username not in local_login_table:
+        print("Error: User does not exist in configDB")
+        exit(-1)
+
+    config_db.set_entry(swsscommon.CFG_LOCAL_LOGIN_TABLE_NAME, username, None)
+
+
+#
+# 'ssh' group ('config  ssh')
+#
+@config.group(cls=clicommon.AbbreviationGroup, name='ssh')
+def ssh():
+    """Configuring system ssh behavior"""
+    pass
+
+# Define the 'login' subgroup under 'ssh'
+@ssh.group(cls=clicommon.AbbreviationGroup, name='login')
+def ssh_login():
+    """SSH login-related configuration"""
+    pass
+
+@ssh_login.command()
+@click.argument('username', metavar='<username>', required=True)
+@click.argument('keyname', metavar='<keyname>', required=True)
+@click.argument('ssh_public_key', metavar='<ssh-public-key>', required=True)
+def setuser(username, keyname, ssh_public_key):
+    """Add a new user or modify an existing user's public ssh key."""
+    config_db = ConfigDBConnector()
+    config_db.connect()
+
+    config_db.set_entry('SSH_LOGIN', (username, keyname), {
+        "ssh-public-key": ssh_public_key
+    })
+
+
+@ssh_login.command()
+@click.argument('username_to_delete', metavar='<username>', required=True)
+def deluser(username_to_delete):
+    """Remove an existing user's SSH keys (all keynames)."""
+
+    config_db = ConfigDBConnector()
+    config_db.connect()
+
+    # Check whether this command will delete the current user.
+    # Do this by checking if the user is also configured with local login.
+    user_will_be_deleted = True
+    local_login_table = config_db.get_table('LOCAL_LOGIN')
+    if username_to_delete in local_login_table:
+            user_will_be_deleted = False
+    
+    # Ensure user is not currently logged in.
+    if user_will_be_deleted:
+        result = subprocess.run(['users'], text=True, capture_output=True)
+        logged_in_users = result.stdout.split()
+        if username_to_delete in logged_in_users:
+            print(f"Error: Can not delete {username_to_delete} as they are currently logged in")
+            exit(-1)
+
+    # Delete all keys for that user
+    ssh_login_table = config_db.get_table('SSH_LOGIN')
+    for key_username, key_name in ssh_login_table:
+        if key_username == username_to_delete:
+            config_db.set_entry('SSH_LOGIN', (key_username, key_name), None)
+
+ 
+@ssh_login.command()
+@click.argument('username', metavar='<username>', required=True)
+@click.argument('keyname_to_delete', metavar='<keyname>', required=True)
+def deluserkey(username, keyname_to_delete):
+    """Delete a specific SSH key (by keyname) from a user"""
+
+    config_db = ConfigDBConnector()
+    config_db.connect()
+
+    # Check whether this command will delete the current user.
+    # Do this by checking if the user is also configured with local login and whether they have any other ssh keys configured.
+    user_will_be_deleted = True
+    local_login_table = config_db.get_table('LOCAL_LOGIN')
+    if username in local_login_table:
+            user_will_be_deleted = False
+    ssh_login_table = config_db.get_table('SSH_LOGIN')
+    for key_username, key_name in ssh_login_table:
+        if key_username == username and key_name != keyname_to_delete:
+            user_will_be_deleted=False
+    
+    # Ensure user is not currently logged in.
+    if user_will_be_deleted:
+        result = subprocess.run(['users'], text=True, capture_output=True)
+        logged_in_users = result.stdout.split()
+        if username in logged_in_users:
+            print(f"Error: Can not delete {username} as they are currently logged in")
+            exit(-1)
+    
+    config_db.set_entry('SSH_LOGIN', (username, key_name), None)
+    
 
 if __name__ == '__main__':
     config()

@@ -114,6 +114,7 @@
  * [Loopback Interfaces](#loopback-interfaces)
   * [Loopback show commands](#loopback-show-commands)
   * [Loopback config commands](#loopback-config-commands)
+* [Local Login](#local-login)
 * [VRF Configuration](#vrf-configuration)
   * [VRF show commands](#vrf-show-commands)
   * [VRF config commands](#vrf-config-commands)
@@ -182,6 +183,7 @@
   * [Processes](#processes)
   * [Services & Memory](#services--memory)
 * [System-Health](#System-Health)
+* [SSH](#ssh)
 * [VLAN & FDB](#vlan--fdb)
   * [VLAN](#vlan)
     * [VLAN show commands](#vlan-show-commands)
@@ -287,8 +289,8 @@ This section covers the basic configurations related to the following:
 
 All SONiC devices support both the serial console based login and the SSH based login by default.
 The default credential (if not modified at image build time) for login is `admin/YourPaSsWoRd`.
-In case of SSH login, users can login to the management interface (eth0) IP address after configuring the same using serial console.
 Refer the following section for configuring the IP address for management interface.
+In case of SSH login, users can login to the management interface (eth0) IP address after configuring the same using serial console.
 
 - Example:
   ```
@@ -6819,6 +6821,42 @@ Saved file can be transferred to remote machines for debugging. If users wants t
 
 Go Back To [Beginning of the document](#) or [Beginning of this section](#loading-reloading-and-saving-configuration)
 
+## Local Login
+This section describes the commands for configuring the local login credentials.
+
+**config local-login setuser**  
+
+Set a user's password. If the user doesn't exist then the user will be created.
+```
+config local-login setuser <username>
+```
+
+Set a user's password using an existing pre-encrypted password. If the user doesn't exist then the user will be created.
+Note: The single quotes around the encrypted password are essential.
+```
+$ config local-login setuser <username> --encrypted-password '<encrypted_password>'
+```
+
+**config local-login delsuer**  
+
+Remove a users password. If the user isn't also configured using ssh login then this will delete the user and their home directory.
+```
+config local-login deluser <username>
+```
+
+**show local-login**  
+Show all users configured with local login.
+```
+show local-login
+```
+
+Show all users configured with local login and their encrypted passwords.
+```
+sudo show local-login
+```
+
+
+
 ## Loopback Interfaces
 
 ### Loopback show commands
@@ -11160,6 +11198,39 @@ In addition, displays a list of all current 'Services' and 'Hardware' being moni
   ```
 
 Go Back To [Beginning of the document](#) or [Beginning of this section](#System-Health)
+
+## SSH
+ 
+### SSH Login
+This section describes the commands for configuring the ssh login credentials.
+
+**config ssh login setuser**  
+
+Set a users ssh public key. If the user does not exist this will create the user.
+```
+config ssh login setuser <username> <keyname> <ssh-public-key> 
+```
+
+**config ssh login deluser**  
+
+Delete all ssh public keys from a user. If the user isn't configured with local login then the user will be deleted.
+```
+config ssh login deluser <username>
+```
+
+**config ssh login deluserkey**  
+
+Delete a public key from a user. If there are no more public keys for that user and the user idn't configured with local login then user will be deleted.
+```
+config ssh login deluserkey <username> <keyname>
+```
+
+**show ssh login**  
+
+Show all users configured with ssh login and their ssh public keys.
+```
+show ssh login
+```
 
 ## VLAN & FDB
 
