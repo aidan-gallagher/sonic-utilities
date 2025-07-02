@@ -1580,7 +1580,7 @@ def runningconfiguration():
 @runningconfiguration.command()
 @click.option('--verbose', is_flag=True, help="Enable verbose output")
 def all(verbose):
-    """Show full running configuration"""
+    """Show full running configuration. Run with sudo to see full config including secrets (such as encrypted passwords)."""
     output = {}
     bgpraw_cmd = "show running-config"
 
@@ -1596,10 +1596,15 @@ def all(verbose):
             if bgp_util.is_bgp_feature_state_enabled(ns):
                 ns_config['bgpraw'] = bgp_util.run_bgp_show_command(bgpraw_cmd, ns, exit_on_fail=False)
             output[ns] = ns_config
-        click.echo(json.dumps(output, indent=4))
     else:
         host_config['bgpraw'] = bgp_util.run_bgp_show_command(bgpraw_cmd, exit_on_fail=False)
-        click.echo(json.dumps(output['localhost'], indent=4))
+        output = output['localhost']
+
+    # If command isn't invoked with sudo persmissions then redact encrypted passwords.
+    if os.geteuid() != 0:
+        if "LOCAL_LOGIN" in output:
+            del output["LOCAL_LOGIN"]
+    click.echo(json.dumps(output, indent=4))
 
 
 # 'acl' subcommand ("show runningconfiguration acl")
@@ -2400,6 +2405,60 @@ def received(db, namespace):
     if not supported:
         ctx = click.get_current_context()
         ctx.fail("ASIC/SDK health event is not supported on the platform")
+
+
+@cli.group('local-login', invoke_without_command=True)
+@clicommon.pass_db
+def local_login(db):
+    """Show local login configuration. If non-sudo, only show usernames.
+        If sudo, show usernames and encrypted passwords."""
+
+    config_db = ConfigDBConnector()
+    config_db.connect()
+
+    local_login_table = config_db.get_table('LOCAL_LOGIN')
+    table_data = []
+
+    if os.geteuid() != 0:
+        for user_name in local_login_table:
+             table_data.append([user_name])
+        print(tabulate(table_data, headers=["Username"], tablefmt="grid"))
+    else:
+        for user_name in local_login_table:
+            password = local_login_table[user_name].get('password', 'Error - password not set')
+            table_data.append([user_name, password])
+        print(tabulate(table_data, headers=["Username", "Password Hash"], tablefmt="grid"))
+
+
+#
+# 'ssh' command group ("show ssh ...")
+#
+@cli.group('ssh', invoke_without_command=True)
+@clicommon.pass_db
+def ssh(db):
+    """Show ssh configuration"""
+    pass
+
+#
+# 'login' command group ("show ssh login ...")
+#
+@ssh.group('login', invoke_without_command=True)
+@clicommon.pass_db
+def login(ctx):
+    """Show SSH login configuration"""
+
+    config_db = ConfigDBConnector()
+    config_db.connect()
+
+    ssh_login_table = config_db.get_table('SSH_LOGIN')
+    table_data = []
+
+    for composite_key, entry in ssh_login_table.items():
+        username, keyname = composite_key
+        ssh_key = entry.get('ssh-public-key', 'N/A')
+        table_data.append([username, keyname, ssh_key])
+
+    print(tabulate(table_data, headers=["Username", "Key Name", "SSH Public Key"], tablefmt="grid"))
 
 
 # Load plugins and register them
